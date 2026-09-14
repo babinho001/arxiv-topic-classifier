@@ -41,11 +41,12 @@ def get_config() -> Dict[str, Any]:
             tokenizer_min_frequency (int): minimum frequency of a subword to add it to the vocabulary
             experiment_name (str): tensorboard experiment name
             seed (int): seed of the model
+            reports_folder (str): folder in which report plots/JSON summaries are saved
     """
     return {
         "dataset_name": "TimSchopf/arxiv_categories",
         "batch_size": 64,
-        "num_epochs": 20,
+        "num_epochs": 12,
         "learning_rate": 3 * 10**-4,
         "context_size": 256,
         "model_dimension": 256,
@@ -62,6 +63,7 @@ def get_config() -> Dict[str, Any]:
         "tokenizer_min_frequency": 3,
         "experiment_name": "runs/arxiv_classifier",
         "seed": 561,
+        "reports_folder": "reports",
     }
 
 
@@ -88,25 +90,39 @@ def get_weights_file_path(
 
 def get_latest_weights(config) -> str:
     """
-    Get the latest saved model weights from a folder.
+    Get the latest saved (numbered-epoch) model weights from a folder. Ignores
+    non-numeric checkpoints such as the 'best' one from get_best_weights.
 
     Args:
         config: Config file.
 
     Returns:
-        str: Path to the latest saved weights of the model.
+        str: Path to the latest saved weights of the model, or None if none exist.
     """
     model_folder = config['model_folder']
     model_basename = config['model_basename']
-    model_filename = f"{model_basename}*"
-    model_filenames = list(Path(model_folder).glob(model_filename))
+    model_filenames = list(Path(model_folder).glob(f"{model_basename}*"))
 
-    if len(model_filenames) == 0:
+    numbered = [f for f in model_filenames if f.stem.split('_')[-1].isdigit()]
+    if len(numbered) == 0:
         return None
 
-    def extract_epoch(filename):
-        return int(filename.stem.split('_')[-1])
+    numbered.sort(key = lambda filename: int(filename.stem.split('_')[-1]))
 
-    model_filenames.sort(key = extract_epoch)
+    return str(numbered[-1])
 
-    return str(model_filenames[-1])
+
+def get_best_weights(config) -> str:
+    """
+    Get the checkpoint saved whenever validation macro-F1 improved during
+    training (see train.py::train_model), i.e. the best-performing epoch
+    regardless of how many epochs ran after it.
+
+    Args:
+        config: Config file.
+
+    Returns:
+        str: Path to the best-validation-macro-F1 checkpoint, or None if it doesn't exist.
+    """
+    path = Path(get_weights_file_path(config, 'best'))
+    return str(path) if path.exists() else None

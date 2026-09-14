@@ -7,8 +7,8 @@ from torch.utils.tensorboard import SummaryWriter
 # Other files stuff
 from dataset import AbstractDataset, load_data
 from model import get_model
-from config import get_weights_file_path, get_latest_weights, get_config
-from evaluate import run_validation, run_test
+from config import get_weights_file_path, get_latest_weights, get_best_weights, get_config
+from evaluate import run_validation, run_test, plot_training_curves, save_json
 
 # HuggingFace stuff
 from tokenizers import Tokenizer
@@ -131,6 +131,9 @@ def train_model(config):
     print(f'Using device {device}.')
 
     Path(config['model_folder']).mkdir(parents = True, exist_ok = True)
+    reports_dir = Path(config['reports_folder'])
+    reports_dir.mkdir(parents = True, exist_ok = True)
+    metrics_history = []
 
     training_dataloader, validation_dataloader, test_dataloader, tokenizer = get_dataset(config)
     model = get_model(config, tokenizer.get_vocab_size()).to(device)
@@ -140,6 +143,7 @@ def train_model(config):
 
     initial_epoch = 0
     global_step = 0
+    best_val_macro_f1 = -1.0
     preload = config['preload']
     model_filename = get_latest_weights(config) if preload == 'latest' else get_weights_file_path(config, preload) if preload else None
 
@@ -150,6 +154,7 @@ def train_model(config):
         model.load_state_dict(state['model_state_dict'])
         initial_epoch = state['epoch'] + 1
         global_step = state['global_step']
+        best_val_macro_f1 = state.get('val_macro_f1', -1.0)
     else:
         print("No model to preload, starting from the beginning.")
 
@@ -161,6 +166,8 @@ def train_model(config):
     for epoch in range(initial_epoch, config['num_epochs']):
 
         model.train()
+        epoch_loss_total = 0.0
+        epoch_examples = 0
         batch_iterator = tqdm(training_dataloader, desc = f"Processing epoch {epoch:02d}")
         for batch in batch_iterator:
 
@@ -172,6 +179,9 @@ def train_model(config):
             loss = loss_function(logits, label)
             batch_iterator.set_postfix({"loss": f"{loss.item():6.3f}"})
 
+            epoch_loss_total += loss.item() * label.size(0)
+            epoch_examples += label.size(0)
+
             writer.add_scalar('train_loss', loss.item(), global_step)
             writer.flush()
 
@@ -182,21 +192,62 @@ def train_model(config):
 
             global_step += 1
 
+        train_loss = epoch_loss_total / epoch_examples
+
         # Run the validation at the end of every epoch.
-        run_validation(model, validation_dataloader, loss_function, device, writer, global_step, lambda msg: batch_iterator.write(msg))
+        val_loss, val_accuracy, val_macro_f1 = run_validation(
+            model, validation_dataloader, loss_function, device, writer, global_step, lambda msg: batch_iterator.write(msg)
+        )
+
+        # Record per-epoch metrics for the training-curve report plot, saving
+        # after every epoch so progress survives a Colab disconnect mid-run.
+        metrics_history.append({
+            'epoch': epoch,
+            'train_loss': train_loss,
+            'val_loss': val_loss,
+            'val_accuracy': val_accuracy,
+            'val_macro_f1': val_macro_f1,
+        })
+        save_json(metrics_history, reports_dir / 'metrics_history.json')
+
+        checkpoint = {
+            'epoch': epoch,
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'global_step': global_step,
+            'val_macro_f1': val_macro_f1,
+        }
 
         # Save weights at certain 'milestone' epochs.
-        model_filename = get_weights_file_path(config, f'{epoch:02d}')
         if epoch % 10 == 9 or epoch == 0 or epoch == config['num_epochs'] - 1:
-            torch.save({
-                'epoch': epoch,
-                'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'global_step': global_step
-            }, model_filename)
+            torch.save(checkpoint, get_weights_file_path(config, f'{epoch:02d}'))
 
-    # Run the test evaluation at the end of training.
-    run_test(model, test_dataloader, device, print)
+        # Also save whenever validation macro-F1 improves, independent of the
+        # milestone schedule above -- this is the checkpoint predict.py prefers,
+        # so the best-performing epoch is never lost even if later epochs
+        # overfit or num_epochs turns out to be more than needed.
+        if val_macro_f1 > best_val_macro_f1:
+            best_val_macro_f1 = val_macro_f1
+            torch.save(checkpoint, get_weights_file_path(config, 'best'))
+            print(f"New best validation macro-F1: {val_macro_f1:.4f} -- saved checkpoint.")
+
+    plot_training_curves(metrics_history, reports_dir / 'training_curves.png')
+
+    # Evaluate on the best checkpoint (by validation macro-F1), not whatever
+    # the model's in-memory weights happen to be at the end of the loop --
+    # those can differ if later epochs overfit past the best one, and
+    # predict.py also prefers the best checkpoint, so this keeps the report's
+    # test numbers consistent with what predict.py will actually produce.
+    best_checkpoint_path = get_best_weights(config)
+    if best_checkpoint_path is not None:
+        best_state = torch.load(best_checkpoint_path, map_location = device)
+        model.load_state_dict(best_state['model_state_dict'])
+        print(
+            f"Loaded best checkpoint (epoch {best_state['epoch']}, "
+            f"val macro-F1 {best_state['val_macro_f1']:.4f}) for final test evaluation."
+        )
+
+    run_test(model, test_dataloader, device, print, output_dir = reports_dir)
 
 
 if __name__ == "__main__":
