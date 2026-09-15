@@ -26,6 +26,7 @@ def get_config() -> Dict[str, Any]:
             batch_size (int): batch size of the model
             num_epochs (int): number of epochs of the model
             learning_rate (float): learning rate of the model
+            weight_decay (float): AdamW weight decay, for regularization
             context_size (int): maximum allowed abstract length (in tokens)
             model_dimension (int): dimension of the embedding vector space
             number_of_blocks (int): number of encoder blocks
@@ -47,7 +48,8 @@ def get_config() -> Dict[str, Any]:
         "dataset_name": "TimSchopf/arxiv_categories",
         "batch_size": 64,
         "num_epochs": 12,
-        "learning_rate": 3 * 10**-4,
+        "learning_rate": 1 * 10**-4,
+        "weight_decay": 0.01,
         "context_size": 256,
         "model_dimension": 256,
         "number_of_blocks": 4,

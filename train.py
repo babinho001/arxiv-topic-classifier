@@ -139,7 +139,13 @@ def train_model(config):
     model = get_model(config, tokenizer.get_vocab_size()).to(device)
 
     writer = SummaryWriter(config['experiment_name'])
-    optimizer = torch.optim.Adam(model.parameters(), lr = config['learning_rate'], eps = 1e-9)
+    # AdamW (Adam + decoupled weight decay) instead of plain Adam: the first
+    # 12-epoch run overfit almost immediately (best epoch was epoch 0, train
+    # loss collapsed to ~0 while validation loss climbed every epoch after).
+    # Weight decay penalizes the large weights that let that happen.
+    optimizer = torch.optim.AdamW(
+        model.parameters(), lr = config['learning_rate'], eps = 1e-9, weight_decay = config['weight_decay']
+    )
 
     initial_epoch = 0
     global_step = 0

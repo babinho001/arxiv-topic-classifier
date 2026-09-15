@@ -152,8 +152,13 @@ the working directory.
   - `get_dataset` calls `load_data`, wraps each of the dataset's existing train/validation/test
     splits in `AbstractDataset` (no `random_split` needed — the splits come pre-defined, unlike the
     reference project's TMX corpus), and returns `DataLoader`s.
-  - `train_model` — Adam optimizer, plain `CrossEntropyLoss` (no class weighting yet — that's a
-    planned follow-up experiment per the proposal, not the baseline), optional checkpoint preload
+  - `train_model` — AdamW optimizer (`learning_rate=1e-4`, `weight_decay=0.01`), plain
+    `CrossEntropyLoss` (no class weighting yet — that's a planned follow-up experiment per the
+    proposal, not the baseline). **Tuning note:** the first real run (plain Adam, no weight decay,
+    `lr=3e-4`) overfit almost immediately — best validation macro-F1 was epoch 0 of 12, train loss
+    collapsed toward 0 while validation loss climbed every epoch after. Switched to AdamW +
+    weight decay and dropped the learning rate specifically to fight that (not yet re-validated
+    with a full run as of this note). Optional checkpoint preload
     (`config["preload"]`), TensorBoard logging. Two independent checkpoint-saving mechanisms: (1)
     milestone saves at epoch 0, the last epoch, and every 10th epoch, numbered
     `{model_basename}{epoch:02d}.pt`; (2) a **best-checkpoint** save, `{model_basename}best.pt`,
