@@ -61,8 +61,14 @@ def get_config() -> Dict[str, Any]:
         "model_basename": "arxiv_classifier_",
         "preload": None,
         "tokenizer_file": "tokenizer.json",
-        "tokenizer_vocab_size": 16000,
-        "tokenizer_min_frequency": 3,
+        # Run 3 (dropout 0.3, weight_decay 0.05) barely changed the overfitting
+        # curve vs. run 2 -- with only ~53k training examples, the 16k-entry
+        # embedding table (~4.1M of the model's ~7.3M params) was the likely
+        # culprit: rare subwords get their own embedding row that's an easy
+        # place to memorize training-set-specific label correlations. Cut
+        # both vocab_size and raise min_frequency to shrink that table.
+        "tokenizer_vocab_size": 8000,
+        "tokenizer_min_frequency": 5,
         "experiment_name": "runs/arxiv_classifier",
         "seed": 561,
         "reports_folder": "reports",

@@ -19,6 +19,7 @@ from tokenizers.normalizers import BertNormalizer
 from datasets import Dataset as HFDataset
 
 # Easy access stuff
+import math
 import warnings
 from pathlib import Path
 from tqdm import tqdm
@@ -142,10 +143,34 @@ def train_model(config):
     # AdamW (Adam + decoupled weight decay) instead of plain Adam: the first
     # 12-epoch run overfit almost immediately (best epoch was epoch 0, train
     # loss collapsed to ~0 while validation loss climbed every epoch after).
-    # Weight decay penalizes the large weights that let that happen.
+    # Weight decay penalizes the large weights that let that happen. 1-D
+    # params (biases, LayerNorm gain/bias) are excluded from decay -- shrinking
+    # those toward 0 doesn't fight overfitting the way shrinking weight
+    # matrices does, and it's standard practice to leave them undecayed.
+    decay_params = [p for p in model.parameters() if p.requires_grad and p.dim() > 1]
+    no_decay_params = [p for p in model.parameters() if p.requires_grad and p.dim() <= 1]
     optimizer = torch.optim.AdamW(
-        model.parameters(), lr = config['learning_rate'], eps = 1e-9, weight_decay = config['weight_decay']
+        [
+            {'params': decay_params, 'weight_decay': config['weight_decay']},
+            {'params': no_decay_params, 'weight_decay': 0.0},
+        ],
+        lr = config['learning_rate'], eps = 1e-9
     )
+
+    total_steps = len(training_dataloader) * config['num_epochs']
+    warmup_steps = max(1, int(0.05 * total_steps))
+
+    # Linear warmup then cosine decay to 0. Runs 1-3 kept a constant LR for
+    # all 12 epochs, so the model kept training at full speed for ~10 epochs
+    # past the epoch where validation macro-F1 peaked -- decaying LR after
+    # warmup slows that late-training memorization phase instead.
+    def lr_lambda(current_step: int) -> float:
+        if current_step < warmup_steps:
+            return current_step / warmup_steps
+        progress = (current_step - warmup_steps) / max(1, total_steps - warmup_steps)
+        return 0.5 * (1.0 + math.cos(math.pi * min(progress, 1.0)))
+
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
     initial_epoch = 0
     global_step = 0
@@ -157,6 +182,8 @@ def train_model(config):
         print(f"Preloading model {model_filename}.")
         state = torch.load(model_filename)
         optimizer.load_state_dict(state['optimizer_state_dict'])
+        if 'scheduler_state_dict' in state:
+            scheduler.load_state_dict(state['scheduler_state_dict'])
         model.load_state_dict(state['model_state_dict'])
         initial_epoch = state['epoch'] + 1
         global_step = state['global_step']
@@ -164,10 +191,14 @@ def train_model(config):
     else:
         print("No model to preload, starting from the beginning.")
 
-    # Single-label classification: plain cross-entropy over class logits. Per
-    # PROJECT_HANDOFF.md, class-weighted variants are a follow-up experiment,
-    # not the baseline.
-    loss_function = nn.CrossEntropyLoss().to(device)
+    # Single-label classification, cross-entropy over class logits, with light
+    # label smoothing (0.1): without it, cross-entropy keeps rewarding the
+    # model for pushing the correct logit ever higher even after it's already
+    # the argmax, which is exactly the "train loss -> 0 while val loss climbs"
+    # pattern seen in runs 1-3. Smoothing caps how confident a "correct"
+    # prediction is allowed to get. Per PROJECT_HANDOFF.md, class-weighted
+    # variants are a separate follow-up experiment, not part of this baseline.
+    loss_function = nn.CrossEntropyLoss(label_smoothing = 0.1).to(device)
 
     for epoch in range(initial_epoch, config['num_epochs']):
 
@@ -189,11 +220,13 @@ def train_model(config):
             epoch_examples += label.size(0)
 
             writer.add_scalar('train_loss', loss.item(), global_step)
+            writer.add_scalar('lr', scheduler.get_last_lr()[0], global_step)
             writer.flush()
 
             loss.backward()
 
             optimizer.step()
+            scheduler.step()
             optimizer.zero_grad()
 
             global_step += 1
@@ -220,6 +253,7 @@ def train_model(config):
             'epoch': epoch,
             'model_state_dict': model.state_dict(),
             'optimizer_state_dict': optimizer.state_dict(),
+            'scheduler_state_dict': scheduler.state_dict(),
             'global_step': global_step,
             'val_macro_f1': val_macro_f1,
         }
