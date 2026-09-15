@@ -1,7 +1,6 @@
 """
 Exports a small sample of the dataset (one abstract per class, 8 rows total)
-for inclusion in the submission zip. Per the professor's instructions, the
-zip must ship a small example (~10 rows), never the full dataset.
+for inclusion in the submission zip, instead of the full dataset.
 
 Usage:
     python export_sample.py

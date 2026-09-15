@@ -116,10 +116,10 @@ class AbstractDataset(TorchDataset):
         abstract = row['abstract']
         label = row['label']
 
-        # Abstracts are frequently longer than context_size allows for; unlike the
-        # reference project (which raises on overlong sentences), we truncate the
-        # abstract body here rather than dropping the example, since abstract
-        # length is unavoidably long-tailed (see PROJECT_HANDOFF.md).
+        # Abstracts are frequently longer than context_size allows for; the
+        # abstract body is truncated here rather than dropping the example,
+        # since abstract length is unavoidably long-tailed and truncating
+        # keeps more usable training data than rejecting overlong examples.
         max_body_tokens = self.context_size - 2 # room for [SOS] and [EOS]
         tokens = self.tokenizer.encode(abstract).ids[:max_body_tokens]
 
